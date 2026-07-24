@@ -19,7 +19,6 @@ import {
 } from '../../test/fixtures/flows.js';
 import {
   mockSettings,
-  mockRuntimeInfo,
   mockNodeTypes,
   mockInstalledModules,
   mockSearchResult,
@@ -302,6 +301,58 @@ describe('NodeRedAPIClient', () => {
       });
     });
 
+    describe('getFlowsWithRev', () => {
+      it('requests the v2 API and returns rev + flows', async () => {
+        mockAxiosInstance.get.mockResolvedValueOnce({
+          data: { rev: 'rev-1', flows: [mockFlowTab] },
+        });
+
+        const result = await client.getFlowsWithRev();
+
+        expect(result).toEqual({ rev: 'rev-1', flows: [mockFlowTab] });
+        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/flows', {
+          headers: { 'Node-RED-API-Version': 'v2' },
+        });
+      });
+    });
+
+    describe('deployModifiedNodes', () => {
+      it('upserts nodes by id into the current flows and deploys with type "nodes"', async () => {
+        const existingNodeA = { id: 'node-a', type: 'inject', z: 'tab-1' };
+        const existingNodeB = { id: 'node-b', type: 'debug', z: 'tab-1' };
+        mockAxiosInstance.get.mockResolvedValueOnce({
+          data: { rev: 'rev-1', flows: [existingNodeA, existingNodeB] },
+        });
+        mockAxiosInstance.post.mockResolvedValueOnce({ data: { rev: 'rev-2' } });
+
+        const updatedNodeA = { id: 'node-a', type: 'inject', z: 'tab-1', name: 'renamed' };
+        const newNodeC = { id: 'node-c', type: 'function', z: 'tab-1' };
+
+        const result = await client.deployModifiedNodes([updatedNodeA, newNodeC]);
+
+        expect(result).toEqual({ rev: 'rev-2' });
+        expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+          '/flows',
+          { rev: 'rev-1', flows: [updatedNodeA, existingNodeB, newNodeC] },
+          {
+            headers: {
+              'Node-RED-API-Version': 'v2',
+              'Node-RED-Deployment-Type': 'nodes',
+            },
+          }
+        );
+      });
+
+      it('propagates errors from the deploy request', async () => {
+        mockAxiosInstance.get.mockResolvedValueOnce({ data: { rev: 'rev-1', flows: [] } });
+        mockAxiosInstance.post.mockRejectedValueOnce(new Error('conflict'));
+
+        await expect(
+          client.deployModifiedNodes([{ id: 'node-a', type: 'inject', z: 'tab-1' }])
+        ).rejects.toThrow();
+      });
+    });
+
     describe('deployFlows', () => {
       it('should deploy with default full type', async () => {
         mockAxiosInstance.post.mockResolvedValueOnce({ data: {} });
@@ -571,13 +622,58 @@ describe('NodeRedAPIClient', () => {
     });
 
     describe('getRuntimeInfo', () => {
-      it('should return runtime info', async () => {
-        mockAxiosInstance.get.mockResolvedValueOnce({ data: mockRuntimeInfo });
+      it('derives version/memory/modules from /diagnostics and per-type node counts from /flows', async () => {
+        const mockDiagnostics = {
+          report: 'diagnostics',
+          runtime: {
+            version: '4.0.9',
+            modules: {
+              'node-red': '4.0.9',
+              'node-red-dashboard': '3.6.0',
+            },
+          },
+          nodejs: {
+            memoryUsage: {
+              rss: 100000000,
+              heapTotal: 50000000,
+              heapUsed: 30000000,
+              external: 5000000,
+              arrayBuffers: 1000000,
+            },
+          },
+        };
+        const mockFlowNodes = [
+          { id: 'tab-1', type: 'tab', label: 'Tab 1' },
+          { id: 'n1', type: 'inject', z: 'tab-1' },
+          { id: 'n2', type: 'inject', z: 'tab-1' },
+          { id: 'n3', type: 'debug', z: 'tab-1' },
+        ];
+
+        mockAxiosInstance.get
+          .mockResolvedValueOnce({ data: mockDiagnostics })
+          .mockResolvedValueOnce({ data: mockFlowNodes });
 
         const info = await client.getRuntimeInfo();
 
-        expect(info).toEqual(mockRuntimeInfo);
-        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/admin/info');
+        expect(info).toEqual({
+          version: '4.0.9',
+          nodes: {
+            inject: { count: 2 },
+            debug: { count: 1 },
+          },
+          modules: {
+            'node-red': { version: '4.0.9' },
+            'node-red-dashboard': { version: '3.6.0' },
+          },
+          memory: {
+            rss: 100000000,
+            heapTotal: 50000000,
+            heapUsed: 30000000,
+            external: 5000000,
+          },
+        });
+        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/diagnostics');
+        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/flows');
       });
     });
 
@@ -614,11 +710,13 @@ describe('NodeRedAPIClient', () => {
 
     describe('getVersion', () => {
       it('should return Node-RED version', async () => {
-        mockAxiosInstance.get.mockResolvedValueOnce({ data: mockRuntimeInfo });
+        mockAxiosInstance.get
+          .mockResolvedValueOnce({ data: { runtime: { version: '4.0.9', modules: {} } } })
+          .mockResolvedValueOnce({ data: [] });
 
         const version = await client.getVersion();
 
-        expect(version).toBe('3.1.0');
+        expect(version).toBe('4.0.9');
       });
     });
   });
@@ -792,7 +890,8 @@ describe('NodeRedAPIClient', () => {
       mockAxiosInstance.get
         .mockResolvedValueOnce({ data: mockSettings })
         .mockResolvedValueOnce({ data: mockFlows })
-        .mockResolvedValueOnce({ data: mockRuntimeInfo });
+        .mockResolvedValueOnce({ data: { runtime: { version: '4.0.9', modules: {} } } })
+        .mockResolvedValueOnce({ data: mockFlows });
 
       const health = await client.healthCheck();
 

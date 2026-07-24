@@ -414,6 +414,56 @@ export class NodeRedAPIClient {
   }
 
   /**
+   * Get the full flow config plus the `rev` needed for a safe conditional
+   * deploy (Node-RED's v2 admin API only returns `rev` when this header is
+   * sent).
+   */
+  async getFlowsWithRev(): Promise<{ rev: string; flows: NodeRedNode[] }> {
+    try {
+      const response = await this.client.get('/flows', {
+        headers: { 'Node-RED-API-Version': 'v2' },
+      });
+      return response.data;
+    } catch (error) {
+      handleNodeRedError(error, 'getFlowsWithRev');
+    }
+  }
+
+  /**
+   * Add or update specific nodes and deploy ONLY those nodes — the same
+   * mechanism as the editor's "Modified Nodes" button. Every node not in
+   * `nodes` (by `id`) is left completely untouched and does not restart,
+   * unlike `updateFlow`/`enableFlow`/`disableFlow`/`deleteFlow`, which replace
+   * (and therefore restart) an entire tab via `PUT /flow/:id`.
+   *
+   * Local-only tool (not part of the upstream fork) — safe to use even on a
+   * tab with long-lived connections (e.g. a Discord bot node), since nothing
+   * outside `nodes` is redeployed.
+   */
+  async deployModifiedNodes(nodes: NodeRedNode[]): Promise<{ rev: string }> {
+    try {
+      const { rev, flows } = await this.getFlowsWithRev();
+      const byId = new Map(flows.map(node => [node.id, node]));
+      for (const node of nodes) {
+        byId.set(node.id, node);
+      }
+      const response = await this.client.post(
+        '/flows',
+        { rev, flows: Array.from(byId.values()) },
+        {
+          headers: {
+            'Node-RED-API-Version': 'v2',
+            'Node-RED-Deployment-Type': 'nodes',
+          },
+        }
+      );
+      return response.data;
+    } catch (error) {
+      handleNodeRedError(error, 'deployModifiedNodes');
+    }
+  }
+
+  /**
    * Delete flow
    */
   async deleteFlow(flowId: string): Promise<void> {
@@ -565,8 +615,37 @@ export class NodeRedAPIClient {
    */
   async getRuntimeInfo(): Promise<NodeRedRuntimeInfo> {
     try {
-      const response = await this.client.get('/admin/info');
-      return response.data;
+      // Node-RED has no single "info" endpoint — /diagnostics has version/memory/
+      // modules, and per-type node instance counts have to be tallied from the
+      // currently deployed flows.
+      const [diagResponse, flowNodes] = await Promise.all([
+        this.client.get('/diagnostics'),
+        this.getFlows(),
+      ]);
+      const diag = diagResponse.data;
+
+      const nodes: Record<string, { count: number }> = {};
+      for (const node of flowNodes) {
+        if (!node.type || node.type === 'tab' || node.type === 'subflow') continue;
+        nodes[node.type] = { count: (nodes[node.type]?.count ?? 0) + 1 };
+      }
+
+      const modules: Record<string, { version: string }> = {};
+      for (const [name, version] of Object.entries(diag.runtime?.modules ?? {})) {
+        modules[name] = { version: String(version) };
+      }
+
+      return {
+        version: diag.runtime?.version ?? 'unknown',
+        nodes,
+        modules,
+        memory: {
+          rss: diag.nodejs?.memoryUsage?.rss ?? 0,
+          heapTotal: diag.nodejs?.memoryUsage?.heapTotal ?? 0,
+          heapUsed: diag.nodejs?.memoryUsage?.heapUsed ?? 0,
+          external: diag.nodejs?.memoryUsage?.external ?? 0,
+        },
+      };
     } catch (error) {
       handleNodeRedError(error, 'getRuntimeInfo');
     }
