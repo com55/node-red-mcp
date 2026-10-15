@@ -146,3 +146,17 @@ mcp-debug.log
 /memory-bank
 core.585
 e2e-results/
+
+# AI Access Phase 0 harness runtime artifacts (keep sources only)
+poc/harness/node_modules/
+poc/harness/lib/
+poc/harness/package-lock.json
+poc/harness/flows*.json
+poc/harness/.flows*.json.backup
+poc/harness/.config.*
+poc/harness/.sessions.json
+poc/harness/.nodered-*
+poc/harness/smoke-*.log
+poc/harness/registration-*.json
+
+poc/harness/.*backup

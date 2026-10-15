@@ -1,0 +1,15 @@
+{
+  "name": "ai-access-phase0-harness",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Local Node-RED harness for AI Access Phase 0 PoC",
+  "scripts": {
+    "start": "node-red -u . -s ./settings.js",
+    "smoke": "node ./smoke-test.mjs"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "node-red": "^4.0.9",
+    "node-red-ai-access": "file:../node-red-ai-access"
+  }
+}

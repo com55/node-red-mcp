@@ -1,0 +1,17 @@
+{
+  "name": "node-red-ai-access",
+  "version": "0.0.1-poc",
+  "description": "Phase 0 PoC: Node-RED AI Access owner page and connect guide routes",
+  "main": "ai-access.js",
+  "keywords": ["node-red", "ai-access", "mcp", "poc"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "node-red": {
+    "version": ">=3.0.0",
+    "plugins": {
+      "node-red-ai-access": "ai-access.js"
+    }
+  }
+}
