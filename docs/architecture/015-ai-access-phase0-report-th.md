@@ -37,6 +37,7 @@
 | หลัง `POST /flows` full deploy | `registerCalls` ยังเป็น **1** |
 | หลัง process restart | timestamp การ register **เปลี่ยน** และ smoke ผ่านอีกครั้ง |
 | `httpAdminRoot=/admin` | owner ที่ `/admin/mcp` ยังถูกป้องกัน; guide ที่ `/mcp/connect/test` ยังสาธารณะ |
+| env `HTTP_ADMIN_ROOT` ค้าง | ทำให้ `/auth/token` และ `/mcp` เลื่อน prefix โดยไม่ตั้งใจ — harness ต้อง pin ค่า root ชัดเจน |
 
 ## 4) สถาปัตยกรรมที่แนะนำ (core vs adapters)
 
