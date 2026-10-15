@@ -502,7 +502,8 @@ export class McpNodeRedServer {
       },
       {
         name: 'update_flow',
-        description: 'Update an existing Node-RED flow',
+        description:
+          'Replace an existing Node-RED tab via PUT /flow/:id (no revision check). Prefer deploy_flow for concurrent-safe edits that use Admin API v2 rev checking.',
         annotations: { readOnlyHint: false },
         inputSchema: {
           type: 'object',
@@ -512,6 +513,36 @@ export class McpNodeRedServer {
             validate: {
               type: 'boolean',
               description: 'If true, validate flowData for structural errors before updating',
+              default: false,
+            },
+          },
+          required: ['flowId', 'flowData'],
+        },
+      },
+      {
+        name: 'deploy_flow',
+        description:
+          "Safely replace one tab's contents using Admin API v2 (GET /flows for rev, then POST /flows). Only that tab object and nodes with z equal to the tab id are replaced; every other tab, subflow, and global config node is left untouched. WARNING: any existing node on this tab that is omitted from flowData.nodes/configs is deleted. Prefer this over update_flow when you need revision-checked deploys. A concurrent edit returns HTTP 409 — re-fetch flows and retry. Default deployment type is 'flows' (modified flows); pass type 'nodes' for modified-nodes deploy.",
+        annotations: { readOnlyHint: false },
+        inputSchema: {
+          type: 'object',
+          properties: {
+            flowId: { type: 'string', description: 'Tab id to replace' },
+            flowData: {
+              type: 'object',
+              description:
+                'Full replacement tab content (same shape as update_flow): label/disabled/info/env plus nodes (and optional configs). Omitted nodes on this tab are deleted.',
+            },
+            type: {
+              type: 'string',
+              enum: ['flows', 'nodes'],
+              description:
+                "Node-RED-Deployment-Type for the POST (default: 'flows'). Use 'nodes' to restart only changed nodes.",
+              default: 'flows',
+            },
+            validate: {
+              type: 'boolean',
+              description: 'If true, validate flowData for structural errors before deploying',
               default: false,
             },
           },
@@ -964,6 +995,24 @@ export class McpNodeRedServer {
           if (args?.validate) validateFlowOrThrow(args.flowData);
           await this.nodeRedClient.updateFlow(flowId, args.flowData);
           return { content: [{ type: 'text', text: `Flow ${flowId} updated successfully` }] };
+        }
+
+        case 'deploy_flow': {
+          const flowId = await this.resolveFlowId(args, 'deploy');
+          if (!args?.flowData) throw new Error('Missing required parameter: flowData');
+          if (args?.validate) validateFlowOrThrow(args.flowData);
+          const deployType = args?.type === 'nodes' ? 'nodes' : 'flows';
+          const deployed = await this.nodeRedClient.deployFlow(flowId, args.flowData, {
+            type: deployType,
+          });
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Deployed flow ${flowId} (type=${deployType}, new rev: ${deployed.rev})`,
+              },
+            ],
+          };
         }
 
         case 'deploy_nodes': {

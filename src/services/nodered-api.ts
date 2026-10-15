@@ -100,6 +100,70 @@ function unexpectedBody(body: unknown, what: string): Error {
   return new Error(`Node-RED returned an unexpected ${kind} instead of ${what}`);
 }
 
+/**
+ * Replace one tab (or subflow definition) and its child nodes inside a flat
+ * Admin API flows array. Other tabs, subflows, and global config nodes are
+ * preserved. Throws if `flowId` is not present as a `tab` / `subflow` entry.
+ *
+ * Any existing node with `id === flowId` or `z === flowId` is removed first;
+ * nodes omitted from `flowData.nodes` / `flowData.configs` are therefore deleted.
+ */
+export function replaceFlowTabInFlatFlows(
+  flows: NodeRedNode[],
+  flowId: string,
+  flowData: Partial<NodeRedFlow>
+): NodeRedNode[] {
+  const existingTab = flows.find(node => node.id === flowId);
+  if (!existingTab || (existingTab.type !== 'tab' && existingTab.type !== 'subflow')) {
+    throw new Error(
+      `Flow '${flowId}' not found. Re-fetch flows and confirm the tab id before retrying.`
+    );
+  }
+
+  const tabNode: NodeRedNode = {
+    ...existingTab,
+    id: flowId,
+    type: existingTab.type,
+  };
+  // Tab objects in the flat array must not carry nested nodes/configs.
+  delete tabNode.nodes;
+  delete tabNode.configs;
+  delete tabNode.subflows;
+  if (flowData.label !== undefined) tabNode.label = flowData.label;
+  if (flowData.disabled !== undefined) tabNode.disabled = flowData.disabled;
+  if (flowData.info !== undefined) tabNode.info = flowData.info;
+  if (flowData.env !== undefined) tabNode.env = flowData.env;
+
+  const children: NodeRedNode[] = [];
+  for (const node of flowData.nodes ?? []) {
+    if (!node || typeof node !== 'object') {
+      throw new Error('Every entry in flowData.nodes must be a node object');
+    }
+    if (typeof node.id !== 'string' || node.id.length === 0) {
+      throw new Error('Every node in flowData.nodes needs a non-empty string id');
+    }
+    if (typeof node.type !== 'string' || node.type.length === 0) {
+      throw new Error(`Node '${node.id}' in flowData.nodes needs a non-empty string type`);
+    }
+    children.push({ ...node, z: flowId });
+  }
+  for (const config of flowData.configs ?? []) {
+    if (!config || typeof config !== 'object') {
+      throw new Error('Every entry in flowData.configs must be a node object');
+    }
+    if (typeof config.id !== 'string' || config.id.length === 0) {
+      throw new Error('Every config in flowData.configs needs a non-empty string id');
+    }
+    if (typeof config.type !== 'string' || config.type.length === 0) {
+      throw new Error(`Config '${config.id}' in flowData.configs needs a non-empty string type`);
+    }
+    children.push({ ...(config as NodeRedNode), z: flowId });
+  }
+
+  const kept = flows.filter(node => node.id !== flowId && node.z !== flowId);
+  return [...kept, tabNode, ...children];
+}
+
 // Containers rather than node instances. A subflow *instance* (`subflow:<id>`)
 // is an ordinary node and is counted; only the subflow definition is skipped.
 const CONTAINER_TYPES = new Set(['tab', 'subflow', 'group']);
@@ -697,7 +761,7 @@ export class NodeRedAPIClient {
    * Safe to use even on a tab with long-lived connections (for example an MQTT
    * client or WebSocket node), since nothing outside `nodes` is redeployed.
    *
-   * Uses Admin API v2: GET /flows for `rev`, then POST /flows with
+   * Uses Admin API v2 via {@link deployFlows} with
    * `Node-RED-Deployment-Type: nodes`. A stale `rev` yields HTTP 409
    * (`version_mismatch`). Optional `credentials` is the top-level v2 credentials
    * object (per-node map or encrypted `$` blob); omitting it leaves the runtime
@@ -707,34 +771,42 @@ export class NodeRedAPIClient {
     nodes: NodeRedNode[],
     credentials?: Record<string, unknown>
   ): Promise<{ rev: string }> {
-    try {
-      const { rev, flows } = await this.getFlowsWithRev();
-      const byId = new Map(flows.map(node => [node.id, node]));
-      for (const node of nodes) {
-        byId.set(node.id, node);
-      }
-      const body: {
-        rev: string;
-        flows: NodeRedNode[];
-        credentials?: Record<string, unknown>;
-      } = { rev, flows: Array.from(byId.values()) };
-      if (credentials !== undefined) {
-        body.credentials = credentials;
-      }
-      const response = await this.client.post('/flows', body, {
-        headers: {
-          'Node-RED-API-Version': 'v2',
-          'Node-RED-Deployment-Type': 'nodes',
-        },
-      });
-      const data = response.data;
-      if (!data || typeof data !== 'object' || typeof data.rev !== 'string') {
-        throw unexpectedBody(data, 'v2 deploy response');
-      }
-      return { rev: data.rev };
-    } catch (error) {
-      handleNodeRedError(error, 'deployModifiedNodes');
+    const { rev, flows } = await this.getFlowsWithRev();
+    const byId = new Map(flows.map(node => [node.id, node]));
+    for (const node of nodes) {
+      byId.set(node.id, node);
     }
+    return this.deployFlows({
+      type: 'nodes',
+      rev,
+      flows: Array.from(byId.values()),
+      ...(credentials !== undefined ? { credentials } : {}),
+    });
+  }
+
+  /**
+   * Replace one tab (and its child nodes) in the flat flow config and deploy
+   * with Admin API v2 revision checking — safer than {@link updateFlow}, which
+   * uses `PUT /flow/:id` with no `rev` check.
+   *
+   * Nodes that belong to the tab (`z === flowId`) but are omitted from
+   * `flowData.nodes` / `flowData.configs` are removed. Other tabs, subflows,
+   * and global config nodes are left untouched.
+   */
+  async deployFlow(
+    flowId: string,
+    flowData: Partial<NodeRedFlow>,
+    options: { type?: 'flows' | 'nodes'; credentials?: Record<string, unknown> } = {}
+  ): Promise<{ rev: string }> {
+    this.assertSafeSegment(flowId, 'flowId');
+    const { rev, flows } = await this.getFlowsWithRev();
+    const merged = replaceFlowTabInFlatFlows(flows, flowId, flowData);
+    return this.deployFlows({
+      type: options.type ?? 'flows',
+      rev,
+      flows: merged,
+      ...(options.credentials !== undefined ? { credentials: options.credentials } : {}),
+    });
   }
 
   /**
@@ -752,35 +824,65 @@ export class NodeRedAPIClient {
   /**
    * Deploy (or reload) the active flow configuration.
    *
-   * Node-RED's Admin API requires a flow body for `full` / `nodes` / `flows`
-   * (POST `/flows` with a null body returns HTTP 400). Only `reload` ignores
-   * the body and reloads from storage. Non-reload deploys use API v2 with the
-   * current `rev` so concurrent editors get a clear 409 instead of a blind
-   * overwrite.
+   * Shared Admin API v2 POST `/flows` helper used by {@link deployModifiedNodes},
+   * {@link deployFlow}, and direct redeploys. Node-RED requires a flow body for
+   * `full` / `nodes` / `flows` (a null body returns HTTP 400). Only `reload`
+   * ignores the body and reloads from storage.
+   *
+   * When `flows` is omitted (non-reload), the current flows are fetched and
+   * re-posted with their `rev`. Callers that already built a merged config
+   * should pass `flows` + `rev` to avoid a second GET. A stale `rev` yields
+   * HTTP 409 (`version_mismatch`).
    */
-  async deployFlows(options: NodeRedDeploymentOptions = { type: 'full' }): Promise<void> {
+  async deployFlows(
+    options: NodeRedDeploymentOptions = { type: 'full' }
+  ): Promise<{ rev: string }> {
     try {
       if (options.type === 'reload') {
-        await this.client.post('/flows', undefined, {
+        const response = await this.client.post('/flows', undefined, {
           headers: {
             'Node-RED-API-Version': 'v2',
             'Node-RED-Deployment-Type': 'reload',
           },
         });
-        return;
+        const data = response.data;
+        if (!data || typeof data !== 'object' || typeof data.rev !== 'string') {
+          throw unexpectedBody(data, 'v2 deploy response');
+        }
+        return { rev: data.rev };
       }
 
-      const { rev, flows } = await this.getFlowsWithRev();
-      await this.client.post(
-        '/flows',
-        { rev, flows },
-        {
-          headers: {
-            'Node-RED-API-Version': 'v2',
-            'Node-RED-Deployment-Type': options.type,
-          },
-        }
-      );
+      let rev = options.rev;
+      let flows = options.flows;
+      if (!flows) {
+        const current = await this.getFlowsWithRev();
+        rev = current.rev;
+        flows = current.flows;
+      }
+
+      const body: {
+        flows: NodeRedNode[];
+        rev?: string;
+        credentials?: Record<string, unknown>;
+      } = { flows };
+      if (rev !== undefined) {
+        body.rev = rev;
+      }
+      if (options.credentials !== undefined) {
+        body.credentials = options.credentials;
+      }
+
+      const response = await this.client.post('/flows', body, {
+        headers: {
+          'Node-RED-API-Version': 'v2',
+          'Node-RED-Deployment-Type': options.type,
+        },
+      });
+      const data = response.data;
+      if (!data || typeof data !== 'object' || typeof data.rev !== 'string') {
+        throw unexpectedBody(data, 'v2 deploy response');
+      }
+      return { rev: data.rev };
     } catch (error) {
       handleNodeRedError(error, 'deployFlows');
     }

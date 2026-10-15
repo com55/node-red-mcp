@@ -11,6 +11,12 @@ and this project adheres to
 
 ### Added
 
+- **`deploy_flow` tool**: Revision-safe replacement of one tab via Admin API v2
+  (`GET /flows` for `rev`, merge only that tab + its `z` children,
+  `POST /flows`). Default deployment type is `flows` (optional `nodes`). Nodes
+  omitted from the provided tab content are deleted. Prefer over `update_flow`
+  for concurrent-safe edits. Shares the `deployFlows` helper with
+  `deploy_nodes`.
 - **`deploy_nodes` tool**: Upsert specific nodes by id and deploy with
   `Node-RED-Deployment-Type: nodes` (editor "Modified Nodes"). Only the listed
   nodes restart; other nodes and long-lived connections on the same tab are left
@@ -19,10 +25,11 @@ and this project adheres to
   stale.
 - **Read-Only Mode (`MCP_READ_ONLY`)**: Structurally prevents mutation of
   Node-RED flows when exposing this server to remote agents
-  - Write tools (`create_flow`, `update_flow`, `deploy_nodes`, `delete_flow`,
-    `enable_flow`, `disable_flow`, `set_context`, `delete_context`,
-    `install_module`) are removed from `getToolDefinitions()`/tool listings
-    entirely, so clients never see them as available capabilities
+  - Write tools (`create_flow`, `update_flow`, `deploy_flow`, `deploy_nodes`,
+    `delete_flow`, `enable_flow`, `disable_flow`, `set_context`,
+    `delete_context`, `install_module`) are removed from
+    `getToolDefinitions()`/tool listings entirely, so clients never see them as
+    available capabilities
   - `callTool` also rejects these tools if called directly by name, as
     defense-in-depth against a client that caches an older tool list
   - Derived from each tool's existing `readOnlyHint` annotation rather than a

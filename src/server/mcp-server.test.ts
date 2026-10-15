@@ -37,6 +37,7 @@ const mockNodeRedClient = {
   getFlow: vi.fn(),
   createFlow: vi.fn(),
   updateFlow: vi.fn(),
+  deployFlow: vi.fn(),
   deployModifiedNodes: vi.fn(),
   enableFlow: vi.fn(),
   disableFlow: vi.fn(),
@@ -145,6 +146,7 @@ describe('McpNodeRedServer', () => {
     mockNodeRedClient.getFlow.mockResolvedValue(mockFlowTab);
     mockNodeRedClient.createFlow.mockResolvedValue(mockCreatedFlow);
     mockNodeRedClient.updateFlow.mockResolvedValue(mockFlowTab);
+    mockNodeRedClient.deployFlow.mockResolvedValue({ rev: 'rev-2' });
     mockNodeRedClient.deployModifiedNodes.mockResolvedValue({ rev: 'rev-2' });
     mockNodeRedClient.enableFlow.mockResolvedValue(undefined);
     mockNodeRedClient.disableFlow.mockResolvedValue(undefined);
@@ -339,9 +341,9 @@ describe('McpNodeRedServer', () => {
       expect(tool?.annotations?.readOnlyHint).toBe(true);
     });
 
-    it('should have exactly 21 tools defined', () => {
+    it('should have exactly 22 tools defined', () => {
       const tools = mcpServer.getToolDefinitions();
-      expect(tools.length).toBe(21);
+      expect(tools.length).toBe(22);
     });
 
     it('should include semantic_search_flows tool', () => {
@@ -490,6 +492,74 @@ describe('McpNodeRedServer', () => {
       const result = await mcpServer.callTool('update_flow', { flowId: 'flow-1' });
 
       expect(result.content[0].text).toContain('flowData');
+    });
+  });
+
+  describe('Tool Execution - deploy_flow', () => {
+    it('deploys a tab via deployFlow and reports the new rev', async () => {
+      const flowData = {
+        label: 'Updated',
+        nodes: [{ id: 'node-a', type: 'inject', wires: [[]] }],
+      };
+
+      const result = await mcpServer.callTool('deploy_flow', {
+        flowId: 'flow-1',
+        flowData,
+      });
+
+      expect(mockNodeRedClient.deployFlow).toHaveBeenCalledWith('flow-1', flowData, {
+        type: 'flows',
+      });
+      expect(result.content[0].text).toContain('flow-1');
+      expect(result.content[0].text).toContain('rev-2');
+      expect(result.content[0].text).toContain('flows');
+    });
+
+    it('passes type "nodes" when requested', async () => {
+      const flowData = { nodes: [] };
+      await mcpServer.callTool('deploy_flow', {
+        flowId: 'flow-1',
+        flowData,
+        type: 'nodes',
+      });
+
+      expect(mockNodeRedClient.deployFlow).toHaveBeenCalledWith('flow-1', flowData, {
+        type: 'nodes',
+      });
+    });
+
+    it('rejects when flowData is missing', async () => {
+      const result = await mcpServer.callTool('deploy_flow', { flowId: 'flow-1' });
+
+      expect(result.content[0].text).toContain('flowData');
+      expect(mockNodeRedClient.deployFlow).not.toHaveBeenCalled();
+    });
+
+    it('is hidden and rejected in read-only mode', async () => {
+      process.env.MCP_READ_ONLY = 'true';
+      try {
+        const tools = mcpServer.getToolDefinitions();
+        expect(tools.find(t => t.name === 'deploy_flow')).toBeUndefined();
+
+        const result = await mcpServer.callTool('deploy_flow', {
+          flowId: 'flow-1',
+          flowData: { nodes: [] },
+        });
+        expect(result.content[0].text).toContain('read-only mode');
+      } finally {
+        delete process.env.MCP_READ_ONLY;
+      }
+    });
+
+    it('describes omission-deletes and recommends itself from update_flow', () => {
+      const tools = mcpServer.getToolDefinitions();
+      const deployFlow = tools.find(t => t.name === 'deploy_flow');
+      const updateFlow = tools.find(t => t.name === 'update_flow');
+
+      expect(deployFlow?.description).toMatch(/omitted/i);
+      expect(deployFlow?.description).toMatch(/deleted/i);
+      expect(updateFlow?.description).toMatch(/PUT \/flow\/:id/);
+      expect(updateFlow?.description).toMatch(/deploy_flow/);
     });
   });
 
