@@ -7,6 +7,11 @@ cd "$ROOT"
 
 PORT="${PORT:-1880}"
 export PORT
+# Always pin roots for the default smoke path unless the caller overrides them.
+# (A leftover HTTP_ADMIN_ROOT=/admin from a prefix experiment would otherwise
+# move /auth/token and /mcp under that prefix and break the harness.)
+export HTTP_ADMIN_ROOT="${HTTP_ADMIN_ROOT:-/}"
+export HTTP_NODE_ROOT="${HTTP_NODE_ROOT:-/}"
 export PUBLIC_BASE_URL="${PUBLIC_BASE_URL:-http://127.0.0.1:${PORT}}"
 export NODERED_URL="${NODERED_URL:-http://127.0.0.1:${PORT}}"
 export POC_ADMIN_USERNAME="${POC_ADMIN_USERNAME:-poc-admin}"

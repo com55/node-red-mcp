@@ -89,6 +89,8 @@ Write-ish: `create_flow`, `update_flow`, `deploy_nodes` (**fork**), `enable_flow
 
 Honor `httpAdminRoot` / `httpNodeRoot` / proxy prefix; derive public links from `PUBLIC_BASE_URL`.
 
+**PoC observation:** when `httpAdminRoot=/admin`, owner + `/auth/token` move under `/admin/*` while `httpNode` public routes stay on `httpNodeRoot` (often `/`). UI and generated guides must never hard-code unprefixed `/mcp` if the instance uses a non-root admin path.
+
 ## Security notes from Phase 0
 
 - `RED.httpAdmin` routes are **not** automatically safe without `needsPermission` (or equivalent) — always attach it.
