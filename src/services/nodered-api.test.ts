@@ -427,34 +427,68 @@ describe('NodeRedAPIClient', () => {
     });
 
     describe('deployFlows', () => {
-      it('should deploy with default full type', async () => {
-        mockAxiosInstance.post.mockResolvedValueOnce({ data: {} });
+      it('re-posts the current v2 flows+rev for default full type', async () => {
+        const flows = [mockFlowTab];
+        mockAxiosInstance.get.mockResolvedValueOnce({ data: { rev: 'rev-1', flows } });
+        mockAxiosInstance.post.mockResolvedValueOnce({ data: { rev: 'rev-2' } });
 
         await client.deployFlows();
 
-        expect(mockAxiosInstance.post).toHaveBeenCalledWith('/flows', null, {
-          headers: { 'Node-RED-Deployment-Type': 'full' },
+        expect(mockAxiosInstance.get).toHaveBeenCalledWith('/flows', {
+          headers: { 'Node-RED-API-Version': 'v2' },
         });
+        expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+          '/flows',
+          { rev: 'rev-1', flows },
+          {
+            headers: {
+              'Node-RED-API-Version': 'v2',
+              'Node-RED-Deployment-Type': 'full',
+            },
+          }
+        );
       });
 
-      it('should deploy with specified type', async () => {
-        mockAxiosInstance.post.mockResolvedValueOnce({ data: {} });
+      it('re-posts the current v2 flows+rev for type "nodes"', async () => {
+        const flows = [{ id: 'node-a', type: 'inject', z: 'tab-1' }];
+        mockAxiosInstance.get.mockResolvedValueOnce({ data: { rev: 'rev-1', flows } });
+        mockAxiosInstance.post.mockResolvedValueOnce({ data: { rev: 'rev-2' } });
 
         await client.deployFlows({ type: 'nodes' });
 
-        expect(mockAxiosInstance.post).toHaveBeenCalledWith('/flows', null, {
-          headers: { 'Node-RED-Deployment-Type': 'nodes' },
+        expect(mockAxiosInstance.post).toHaveBeenCalledWith(
+          '/flows',
+          { rev: 'rev-1', flows },
+          {
+            headers: {
+              'Node-RED-API-Version': 'v2',
+              'Node-RED-Deployment-Type': 'nodes',
+            },
+          }
+        );
+      });
+
+      it('posts without a body for type "reload"', async () => {
+        mockAxiosInstance.post.mockResolvedValueOnce({ data: { rev: 'rev-1' } });
+
+        await client.deployFlows({ type: 'reload' });
+
+        expect(mockAxiosInstance.get).not.toHaveBeenCalled();
+        expect(mockAxiosInstance.post).toHaveBeenCalledWith('/flows', undefined, {
+          headers: {
+            'Node-RED-API-Version': 'v2',
+            'Node-RED-Deployment-Type': 'reload',
+          },
         });
       });
     });
 
     describe('enableFlow', () => {
-      it('should enable a flow and deploy', async () => {
+      it('enables a flow via PUT and does not call a null-body deploy', async () => {
         mockAxiosInstance.get.mockResolvedValueOnce({ data: mockDisabledFlow });
         mockAxiosInstance.put.mockResolvedValueOnce({
           data: { ...mockDisabledFlow, disabled: false },
         });
-        mockAxiosInstance.post.mockResolvedValueOnce({ data: {} });
 
         await client.enableFlow('flow-disabled');
 
@@ -463,17 +497,14 @@ describe('NodeRedAPIClient', () => {
           '/flow/flow-disabled',
           expect.objectContaining({ disabled: false })
         );
-        expect(mockAxiosInstance.post).toHaveBeenCalledWith('/flows', null, {
-          headers: { 'Node-RED-Deployment-Type': 'flows' },
-        });
+        expect(mockAxiosInstance.post).not.toHaveBeenCalled();
       });
     });
 
     describe('disableFlow', () => {
-      it('should disable a flow and deploy', async () => {
+      it('disables a flow via PUT and does not call a null-body deploy', async () => {
         mockAxiosInstance.get.mockResolvedValueOnce({ data: mockFlowTab });
         mockAxiosInstance.put.mockResolvedValueOnce({ data: { ...mockFlowTab, disabled: true } });
-        mockAxiosInstance.post.mockResolvedValueOnce({ data: {} });
 
         await client.disableFlow('flow-1');
 
@@ -482,6 +513,7 @@ describe('NodeRedAPIClient', () => {
           '/flow/flow-1',
           expect.objectContaining({ disabled: true })
         );
+        expect(mockAxiosInstance.post).not.toHaveBeenCalled();
       });
     });
   });
@@ -1389,6 +1421,7 @@ describe('NodeRedAPIClient', () => {
     });
 
     it('deployFlows propagates error', async () => {
+      mockAxiosInstance.get.mockResolvedValueOnce({ data: { rev: 'rev-1', flows: [] } });
       mockAxiosInstance.post.mockRejectedValueOnce(err);
       await expect(client.deployFlows()).rejects.toThrow();
     });

@@ -67,6 +67,11 @@ and this project adheres to
 
 ### Fixed
 
+- **`deployFlows` null body**: `POST /flows` with a null body returns HTTP 400
+  for `full` / `nodes` / `flows` on Node-RED 4.x. `deployFlows` now re-posts the
+  current v2 `{ rev, flows }` (or uses `reload` with no body). `enableFlow` /
+  `disableFlow` no longer call a redundant follow-up deploy — `PUT /flow/:id`
+  already persists and deploys the tab.
 - **Node-RED Username/Password Authentication**: when `NODERED_USERNAME` +
   `NODERED_PASSWORD` are Node-RED's own `adminAuth` credentials, sending them as
   a static HTTP Basic header on every request doesn't work — Node-RED's admin

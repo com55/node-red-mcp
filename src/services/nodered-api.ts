@@ -750,15 +750,37 @@ export class NodeRedAPIClient {
   }
 
   /**
-   * Deploy flows
+   * Deploy (or reload) the active flow configuration.
+   *
+   * Node-RED's Admin API requires a flow body for `full` / `nodes` / `flows`
+   * (POST `/flows` with a null body returns HTTP 400). Only `reload` ignores
+   * the body and reloads from storage. Non-reload deploys use API v2 with the
+   * current `rev` so concurrent editors get a clear 409 instead of a blind
+   * overwrite.
    */
   async deployFlows(options: NodeRedDeploymentOptions = { type: 'full' }): Promise<void> {
     try {
-      await this.client.post('/flows', null, {
-        headers: {
-          'Node-RED-Deployment-Type': options.type,
-        },
-      });
+      if (options.type === 'reload') {
+        await this.client.post('/flows', undefined, {
+          headers: {
+            'Node-RED-API-Version': 'v2',
+            'Node-RED-Deployment-Type': 'reload',
+          },
+        });
+        return;
+      }
+
+      const { rev, flows } = await this.getFlowsWithRev();
+      await this.client.post(
+        '/flows',
+        { rev, flows },
+        {
+          headers: {
+            'Node-RED-API-Version': 'v2',
+            'Node-RED-Deployment-Type': options.type,
+          },
+        }
+      );
     } catch (error) {
       handleNodeRedError(error, 'deployFlows');
     }
@@ -766,13 +788,15 @@ export class NodeRedAPIClient {
 
   /**
    * Enable specific flow
+   *
+   * `PUT /flow/:id` already persists and deploys the tab (runtime
+   * `updateFlow` → `setFlows(..., "flows")`), so no follow-up deploy is needed.
    */
   async enableFlow(flowId: string): Promise<void> {
     try {
       const flow = await this.getFlow(flowId);
       flow.disabled = false;
       await this.updateFlow(flowId, flow);
-      await this.deployFlows({ type: 'flows' });
     } catch (error) {
       handleNodeRedError(error, `enableFlow(${flowId})`);
     }
@@ -780,13 +804,15 @@ export class NodeRedAPIClient {
 
   /**
    * Disable specific flow
+   *
+   * `PUT /flow/:id` already persists and deploys the tab (runtime
+   * `updateFlow` → `setFlows(..., "flows")`), so no follow-up deploy is needed.
    */
   async disableFlow(flowId: string): Promise<void> {
     try {
       const flow = await this.getFlow(flowId);
       flow.disabled = true;
       await this.updateFlow(flowId, flow);
-      await this.deployFlows({ type: 'flows' });
     } catch (error) {
       handleNodeRedError(error, `disableFlow(${flowId})`);
     }

@@ -199,7 +199,7 @@ export interface NodeRedFlowStatus {
 }
 
 export interface NodeRedDeploymentOptions {
-  type: 'full' | 'nodes' | 'flows';
+  type: 'full' | 'nodes' | 'flows' | 'reload';
   nodes?: string[];
 }
 
