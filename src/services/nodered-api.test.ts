@@ -40,13 +40,13 @@ import {
   validateNodeRedAuth,
   getNodeRedAuthScope,
 } from '../utils/auth.js';
+import { NodeRedError } from '../utils/error-handling.js';
 
 import {
   NodeRedAPIClient,
   assertExpectedFlowRev,
   replaceFlowTabInFlatFlows,
 } from './nodered-api.js';
-import { NodeRedError } from '../utils/error-handling.js';
 
 // Mock axios
 vi.mock('axios', () => {
