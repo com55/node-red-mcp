@@ -34,6 +34,7 @@ import { SSEHandler } from './sse-handler.js';
 const mockNodeRedClient = {
   getFlows: vi.fn(),
   getFlowSummaries: vi.fn(),
+  getFlowsWithRev: vi.fn(),
   getFlow: vi.fn(),
   createFlow: vi.fn(),
   updateFlow: vi.fn(),
@@ -143,6 +144,7 @@ describe('McpNodeRedServer', () => {
     mockNodeRedClient.testConnection.mockResolvedValue(true);
     mockNodeRedClient.getFlows.mockResolvedValue(mockFlows);
     mockNodeRedClient.getFlowSummaries.mockResolvedValue(mockFlowSummaries);
+    mockNodeRedClient.getFlowsWithRev.mockResolvedValue({ rev: 'rev-1', flows: [] });
     mockNodeRedClient.getFlow.mockResolvedValue(mockFlowTab);
     mockNodeRedClient.createFlow.mockResolvedValue(mockCreatedFlow);
     mockNodeRedClient.updateFlow.mockResolvedValue(mockFlowTab);
@@ -425,8 +427,18 @@ describe('McpNodeRedServer', () => {
       const result = await mcpServer.callTool('get_flows', {});
 
       expect(mockNodeRedClient.getFlowSummaries).toHaveBeenCalledWith(['tab', 'subflow']);
+      expect(mockNodeRedClient.getFlowsWithRev).toHaveBeenCalled();
       expect(result.content).toBeDefined();
       expect(result.content[0].type).toBe('text');
+    });
+
+    it('exposes the current rev alongside data without changing the data shape', async () => {
+      const result = await mcpServer.callTool('get_flows', {});
+      const parsed = JSON.parse(result.content[0].text);
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.rev).toBe('rev-1');
+      expect(Array.isArray(parsed.data)).toBe(true);
     });
 
     it('should return full flows when includeDetails is true', async () => {
@@ -434,6 +446,7 @@ describe('McpNodeRedServer', () => {
 
       expect(mockNodeRedClient.getFlows).toHaveBeenCalled();
       expect(mockNodeRedClient.getFlowSummaries).not.toHaveBeenCalled();
+      expect(mockNodeRedClient.getFlowsWithRev).toHaveBeenCalled();
     });
 
     it('should pass custom types to getFlowSummaries', async () => {
@@ -449,6 +462,16 @@ describe('McpNodeRedServer', () => {
 
       expect(mockNodeRedClient.getFlow).toHaveBeenCalledWith('flow-1');
       expect(result.content).toBeDefined();
+    });
+
+    it('exposes the current rev alongside the flow data', async () => {
+      const result = await mcpServer.callTool('get_flow', { flowId: 'flow-1' });
+      const parsed = JSON.parse(result.content[0].text);
+
+      expect(parsed.success).toBe(true);
+      expect(parsed.rev).toBe('rev-1');
+      expect(parsed.data).toEqual(mockFlowTab);
+      expect(mockNodeRedClient.getFlowsWithRev).toHaveBeenCalled();
     });
 
     it('should throw validation error when flowId is missing', async () => {
@@ -505,14 +528,17 @@ describe('McpNodeRedServer', () => {
       const result = await mcpServer.callTool('deploy_flow', {
         flowId: 'flow-1',
         flowData,
+        expected_rev: 'rev-1',
       });
 
       expect(mockNodeRedClient.deployFlow).toHaveBeenCalledWith('flow-1', flowData, {
+        expectedRev: 'rev-1',
         type: 'flows',
       });
-      expect(result.content[0].text).toContain('flow-1');
-      expect(result.content[0].text).toContain('rev-2');
-      expect(result.content[0].text).toContain('flows');
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.success).toBe(true);
+      expect(parsed.rev).toBe('rev-2');
+      expect(parsed.message).toContain('flow-1');
     });
 
     it('passes type "nodes" when requested', async () => {
@@ -520,18 +546,33 @@ describe('McpNodeRedServer', () => {
       await mcpServer.callTool('deploy_flow', {
         flowId: 'flow-1',
         flowData,
+        expected_rev: 'rev-1',
         type: 'nodes',
       });
 
       expect(mockNodeRedClient.deployFlow).toHaveBeenCalledWith('flow-1', flowData, {
+        expectedRev: 'rev-1',
         type: 'nodes',
       });
     });
 
     it('rejects when flowData is missing', async () => {
-      const result = await mcpServer.callTool('deploy_flow', { flowId: 'flow-1' });
+      const result = await mcpServer.callTool('deploy_flow', {
+        flowId: 'flow-1',
+        expected_rev: 'rev-1',
+      });
 
       expect(result.content[0].text).toContain('flowData');
+      expect(mockNodeRedClient.deployFlow).not.toHaveBeenCalled();
+    });
+
+    it('rejects when expected_rev is missing', async () => {
+      const result = await mcpServer.callTool('deploy_flow', {
+        flowId: 'flow-1',
+        flowData: { nodes: [] },
+      });
+
+      expect(result.content[0].text).toContain('expected_rev');
       expect(mockNodeRedClient.deployFlow).not.toHaveBeenCalled();
     });
 
@@ -544,6 +585,7 @@ describe('McpNodeRedServer', () => {
         const result = await mcpServer.callTool('deploy_flow', {
           flowId: 'flow-1',
           flowData: { nodes: [] },
+          expected_rev: 'rev-1',
         });
         expect(result.content[0].text).toContain('read-only mode');
       } finally {
@@ -558,6 +600,8 @@ describe('McpNodeRedServer', () => {
 
       expect(deployFlow?.description).toMatch(/omitted/i);
       expect(deployFlow?.description).toMatch(/deleted/i);
+      expect(deployFlow?.description).toMatch(/expected_rev/);
+      expect(deployFlow?.inputSchema.required).toContain('expected_rev');
       expect(updateFlow?.description).toMatch(/PUT \/flow\/:id/);
       expect(updateFlow?.description).toMatch(/deploy_flow/);
     });
@@ -567,33 +611,59 @@ describe('McpNodeRedServer', () => {
     it('deploys the given nodes and reports the new rev', async () => {
       const nodes = [{ id: 'node-a', type: 'inject', z: 'tab-1' }];
 
-      const result = await mcpServer.callTool('deploy_nodes', { nodes });
+      const result = await mcpServer.callTool('deploy_nodes', {
+        nodes,
+        expected_rev: 'rev-1',
+      });
 
-      expect(mockNodeRedClient.deployModifiedNodes).toHaveBeenCalledWith(nodes, undefined);
-      expect(result.content[0].text).toContain('node-a');
-      expect(result.content[0].text).toContain('rev-2');
+      expect(mockNodeRedClient.deployModifiedNodes).toHaveBeenCalledWith(nodes, 'rev-1', undefined);
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.success).toBe(true);
+      expect(parsed.rev).toBe('rev-2');
+      expect(parsed.message).toContain('node-a');
     });
 
     it('forwards optional credentials to the API client', async () => {
       const nodes = [{ id: 'node-a', type: 'mqtt-broker' }];
       const credentials = { 'node-a': { user: 'u', password: 'p' } };
 
-      const result = await mcpServer.callTool('deploy_nodes', { nodes, credentials });
+      const result = await mcpServer.callTool('deploy_nodes', {
+        nodes,
+        expected_rev: 'rev-1',
+        credentials,
+      });
 
-      expect(mockNodeRedClient.deployModifiedNodes).toHaveBeenCalledWith(nodes, credentials);
+      expect(mockNodeRedClient.deployModifiedNodes).toHaveBeenCalledWith(
+        nodes,
+        'rev-1',
+        credentials
+      );
       expect(result.content[0].text).toContain('node-a');
     });
 
     it('rejects when nodes is missing or empty', async () => {
-      const result = await mcpServer.callTool('deploy_nodes', { nodes: [] });
+      const result = await mcpServer.callTool('deploy_nodes', {
+        nodes: [],
+        expected_rev: 'rev-1',
+      });
 
       expect(result.content[0].text).toContain('nodes');
+      expect(mockNodeRedClient.deployModifiedNodes).not.toHaveBeenCalled();
+    });
+
+    it('rejects when expected_rev is missing', async () => {
+      const result = await mcpServer.callTool('deploy_nodes', {
+        nodes: [{ id: 'node-a', type: 'inject', z: 'tab-1' }],
+      });
+
+      expect(result.content[0].text).toContain('expected_rev');
       expect(mockNodeRedClient.deployModifiedNodes).not.toHaveBeenCalled();
     });
 
     it('rejects a node missing an id', async () => {
       const result = await mcpServer.callTool('deploy_nodes', {
         nodes: [{ type: 'inject', z: 'tab-1' }],
+        expected_rev: 'rev-1',
       });
 
       expect(result.content[0].text).toContain('id');
@@ -603,6 +673,7 @@ describe('McpNodeRedServer', () => {
     it('rejects a node missing a type', async () => {
       const result = await mcpServer.callTool('deploy_nodes', {
         nodes: [{ id: 'node-a', z: 'tab-1' }],
+        expected_rev: 'rev-1',
       });
 
       expect(result.content[0].text).toContain('type');
@@ -615,6 +686,7 @@ describe('McpNodeRedServer', () => {
           { id: 'node-a', type: 'inject', z: 'tab-1' },
           { id: 'node-a', type: 'debug', z: 'tab-1' },
         ],
+        expected_rev: 'rev-1',
       });
 
       expect(result.content[0].text).toContain('Duplicate node id');
@@ -624,6 +696,7 @@ describe('McpNodeRedServer', () => {
     it('rejects a non-object credentials value', async () => {
       const result = await mcpServer.callTool('deploy_nodes', {
         nodes: [{ id: 'node-a', type: 'inject', z: 'tab-1' }],
+        expected_rev: 'rev-1',
         credentials: ['not-an-object'],
       });
 
@@ -639,6 +712,7 @@ describe('McpNodeRedServer', () => {
 
         const result = await mcpServer.callTool('deploy_nodes', {
           nodes: [{ id: 'node-a', type: 'inject', z: 'tab-1' }],
+          expected_rev: 'rev-1',
         });
         expect(result.content[0].text).toContain('read-only mode');
       } finally {

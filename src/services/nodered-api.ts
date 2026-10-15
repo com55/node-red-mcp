@@ -25,7 +25,7 @@ import {
   getTlsRejectUnauthorized,
   getNodeRedAuthScope,
 } from '../utils/auth.js';
-import { handleNodeRedError } from '../utils/error-handling.js';
+import { handleNodeRedError, NodeRedError } from '../utils/error-handling.js';
 import { CircuitBreaker, retryWithCircuitBreaker, type RetryOptions } from '../utils/retry.js';
 
 export interface NodeRedAPIConfig {
@@ -98,6 +98,24 @@ function unexpectedBody(body: unknown, what: string): Error {
   }
   const kind = body === null ? 'null' : Array.isArray(body) ? 'array' : typeof body;
   return new Error(`Node-RED returned an unexpected ${kind} instead of ${what}`);
+}
+
+/**
+ * Fail fast when the caller's `expected_rev` does not match the runtime's
+ * current revision — same optimistic-concurrency model as two editor sessions.
+ */
+export function assertExpectedFlowRev(
+  expectedRev: string,
+  currentRev: string,
+  context: string
+): void {
+  if (expectedRev === currentRev) return;
+  throw new NodeRedError(
+    `Flow revision conflict in ${context}: expected_rev '${expectedRev}' does not match current rev '${currentRev}'. The flows changed since you last read them — re-read flows (get the new rev), re-apply your change, and retry.`,
+    409,
+    409,
+    { code: 'version_mismatch', expected_rev: expectedRev, current_rev: currentRev }
+  );
 }
 
 /**
@@ -761,24 +779,30 @@ export class NodeRedAPIClient {
    * Safe to use even on a tab with long-lived connections (for example an MQTT
    * client or WebSocket node), since nothing outside `nodes` is redeployed.
    *
-   * Uses Admin API v2 via {@link deployFlows} with
-   * `Node-RED-Deployment-Type: nodes`. A stale `rev` yields HTTP 409
-   * (`version_mismatch`). Optional `credentials` is the top-level v2 credentials
-   * object (per-node map or encrypted `$` blob); omitting it leaves the runtime
-   * credential store unchanged for nodes that do not carry inline credentials.
+   * Optimistic concurrency: pass the `rev` previously returned by
+   * {@link getFlowsWithRev} / `get_flows` / `get_flow` as `expectedRev`. The
+   * current flows are still fetched to build the merge, but the POST uses the
+   * caller's `expectedRev` (never the freshly fetched rev). A mismatch fails
+   * fast with HTTP 409 semantics before posting; a race after the check still
+   * yields Node-RED's 409 `version_mismatch`.
    */
   async deployModifiedNodes(
     nodes: NodeRedNode[],
+    expectedRev: string,
     credentials?: Record<string, unknown>
   ): Promise<{ rev: string }> {
-    const { rev, flows } = await this.getFlowsWithRev();
+    if (typeof expectedRev !== 'string' || expectedRev.length === 0) {
+      throw new Error('expectedRev is required (non-empty string from get_flows / get_flow)');
+    }
+    const { rev: currentRev, flows } = await this.getFlowsWithRev();
+    assertExpectedFlowRev(expectedRev, currentRev, 'deployModifiedNodes');
     const byId = new Map(flows.map(node => [node.id, node]));
     for (const node of nodes) {
       byId.set(node.id, node);
     }
     return this.deployFlows({
       type: 'nodes',
-      rev,
+      rev: expectedRev,
       flows: Array.from(byId.values()),
       ...(credentials !== undefined ? { credentials } : {}),
     });
@@ -792,18 +816,30 @@ export class NodeRedAPIClient {
    * Nodes that belong to the tab (`z === flowId`) but are omitted from
    * `flowData.nodes` / `flowData.configs` are removed. Other tabs, subflows,
    * and global config nodes are left untouched.
+   *
+   * Optimistic concurrency: `options.expectedRev` must be the rev from the
+   * prior read. The merge uses a fresh GET, but the POST `rev` is always the
+   * caller's `expectedRev`.
    */
   async deployFlow(
     flowId: string,
     flowData: Partial<NodeRedFlow>,
-    options: { type?: 'flows' | 'nodes'; credentials?: Record<string, unknown> } = {}
+    options: {
+      expectedRev: string;
+      type?: 'flows' | 'nodes';
+      credentials?: Record<string, unknown>;
+    }
   ): Promise<{ rev: string }> {
     this.assertSafeSegment(flowId, 'flowId');
-    const { rev, flows } = await this.getFlowsWithRev();
+    if (typeof options?.expectedRev !== 'string' || options.expectedRev.length === 0) {
+      throw new Error('expectedRev is required (non-empty string from get_flows / get_flow)');
+    }
+    const { rev: currentRev, flows } = await this.getFlowsWithRev();
+    assertExpectedFlowRev(options.expectedRev, currentRev, 'deployFlow');
     const merged = replaceFlowTabInFlatFlows(flows, flowId, flowData);
     return this.deployFlows({
       type: options.type ?? 'flows',
-      rev,
+      rev: options.expectedRev,
       flows: merged,
       ...(options.credentials !== undefined ? { credentials: options.credentials } : {}),
     });

@@ -87,12 +87,12 @@ docker run -e NODERED_URL=http://your-nodered:1880 \
 
 | Tool                    | Description                        | Key Parameters                                   |
 | ----------------------- | ---------------------------------- | ------------------------------------------------ |
-| `get_flows`             | List flows (summary or full)       | `includeDetails?`, `types?`, `limit?`, `offset?` |
-| `get_flow`              | Get a specific flow                | `flowId`                                         |
+| `get_flows`             | List flows (summary or full) + rev | `includeDetails?`, `types?`, `limit?`, `offset?` |
+| `get_flow`              | Get a specific flow + rev          | `flowId`                                         |
 | `create_flow`           | Create a new flow                  | `flowData`, `validate?`                          |
 | `update_flow`           | Update an existing flow (PUT)      | `flowId`, `flowData`, `validate?`                |
-| `deploy_flow`           | Replace one tab; rev-checked POST  | `flowId`, `flowData`, `type?`, `validate?`       |
-| `deploy_nodes`          | Upsert nodes; deploy only those    | `nodes`, `credentials?`                          |
+| `deploy_flow`           | Replace one tab; rev-checked POST  | `flowId`, `flowData`, `expected_rev`, `type?`    |
+| `deploy_nodes`          | Upsert nodes; deploy only those    | `nodes`, `expected_rev`, `credentials?`          |
 | `enable_flow`           | Enable a flow                      | `flowId`                                         |
 | `disable_flow`          | Disable a flow                     | `flowId`                                         |
 | `delete_flow`           | Delete a flow (dry-run by default) | `flowId`, `dryRun?`, `confirm?`                  |

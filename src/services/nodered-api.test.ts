@@ -41,7 +41,12 @@ import {
   getNodeRedAuthScope,
 } from '../utils/auth.js';
 
-import { NodeRedAPIClient, replaceFlowTabInFlatFlows } from './nodered-api.js';
+import {
+  NodeRedAPIClient,
+  assertExpectedFlowRev,
+  replaceFlowTabInFlatFlows,
+} from './nodered-api.js';
+import { NodeRedError } from '../utils/error-handling.js';
 
 // Mock axios
 vi.mock('axios', () => {
@@ -333,8 +338,32 @@ describe('NodeRedAPIClient', () => {
       });
     });
 
+    describe('assertExpectedFlowRev', () => {
+      it('passes when revs match', () => {
+        expect(() => assertExpectedFlowRev('rev-1', 'rev-1', 'test')).not.toThrow();
+      });
+
+      it('throws a 409-style NodeRedError when revs differ', () => {
+        try {
+          assertExpectedFlowRev('stale', 'fresh', 'deployModifiedNodes');
+          expect.unreachable('should throw');
+        } catch (e) {
+          expect(e).toBeInstanceOf(NodeRedError);
+          const err = e as NodeRedError;
+          expect(err.statusCode).toBe(409);
+          expect(err.message).toContain('expected_rev');
+          expect(err.message).toContain('re-read flows');
+          expect(err.nodeRedResponse).toMatchObject({
+            code: 'version_mismatch',
+            expected_rev: 'stale',
+            current_rev: 'fresh',
+          });
+        }
+      });
+    });
+
     describe('deployModifiedNodes', () => {
-      it('upserts nodes by id into the current flows and deploys with type "nodes"', async () => {
+      it('upserts nodes by id and POSTs the caller expected_rev', async () => {
         const existingNodeA = { id: 'node-a', type: 'inject', z: 'tab-1' };
         const existingNodeB = { id: 'node-b', type: 'debug', z: 'tab-1' };
         mockAxiosInstance.get.mockResolvedValueOnce({
@@ -345,7 +374,7 @@ describe('NodeRedAPIClient', () => {
         const updatedNodeA = { id: 'node-a', type: 'inject', z: 'tab-1', name: 'renamed' };
         const newNodeC = { id: 'node-c', type: 'function', z: 'tab-1' };
 
-        const result = await client.deployModifiedNodes([updatedNodeA, newNodeC]);
+        const result = await client.deployModifiedNodes([updatedNodeA, newNodeC], 'rev-1');
 
         expect(result).toEqual({ rev: 'rev-2' });
         expect(mockAxiosInstance.post).toHaveBeenCalledWith(
@@ -360,6 +389,17 @@ describe('NodeRedAPIClient', () => {
         );
       });
 
+      it('fails fast when expected_rev does not match the current rev', async () => {
+        mockAxiosInstance.get.mockResolvedValueOnce({
+          data: { rev: 'rev-fresh', flows: [{ id: 'node-a', type: 'inject', z: 'tab-1' }] },
+        });
+
+        await expect(
+          client.deployModifiedNodes([{ id: 'node-a', type: 'inject', z: 'tab-1' }], 'rev-stale')
+        ).rejects.toThrow(/expected_rev 'rev-stale'/);
+        expect(mockAxiosInstance.post).not.toHaveBeenCalled();
+      });
+
       it('includes top-level credentials when provided', async () => {
         mockAxiosInstance.get.mockResolvedValueOnce({
           data: { rev: 'rev-1', flows: [{ id: 'node-a', type: 'mqtt-broker' }] },
@@ -369,6 +409,7 @@ describe('NodeRedAPIClient', () => {
         const credentials = { 'node-a': { user: 'u', password: 'p' } };
         await client.deployModifiedNodes(
           [{ id: 'node-a', type: 'mqtt-broker', name: 'broker' }],
+          'rev-1',
           credentials
         );
 
@@ -395,7 +436,7 @@ describe('NodeRedAPIClient', () => {
         mockAxiosInstance.post.mockResolvedValueOnce({ data: { ok: true } });
 
         await expect(
-          client.deployModifiedNodes([{ id: 'node-a', type: 'inject', z: 'tab-1' }])
+          client.deployModifiedNodes([{ id: 'node-a', type: 'inject', z: 'tab-1' }], 'rev-1')
         ).rejects.toThrow(/v2 deploy response/);
       });
 
@@ -412,7 +453,7 @@ describe('NodeRedAPIClient', () => {
         });
 
         await expect(
-          client.deployModifiedNodes([{ id: 'node-a', type: 'inject', z: 'tab-1' }])
+          client.deployModifiedNodes([{ id: 'node-a', type: 'inject', z: 'tab-1' }], 'rev-1')
         ).rejects.toThrow(/revision \(rev\) is out of date/);
       });
 
@@ -421,31 +462,8 @@ describe('NodeRedAPIClient', () => {
         mockAxiosInstance.post.mockRejectedValueOnce(new Error('conflict'));
 
         await expect(
-          client.deployModifiedNodes([{ id: 'node-a', type: 'inject', z: 'tab-1' }])
+          client.deployModifiedNodes([{ id: 'node-a', type: 'inject', z: 'tab-1' }], 'rev-1')
         ).rejects.toThrow();
-      });
-
-      it('posts through the shared deployFlows helper (v2 nodes deploy)', async () => {
-        mockAxiosInstance.get.mockResolvedValueOnce({
-          data: { rev: 'rev-1', flows: [{ id: 'node-a', type: 'inject', z: 'tab-1' }] },
-        });
-        mockAxiosInstance.post.mockResolvedValueOnce({ data: { rev: 'rev-2' } });
-
-        await client.deployModifiedNodes([{ id: 'node-a', type: 'inject', z: 'tab-1', name: 'x' }]);
-
-        expect(mockAxiosInstance.post).toHaveBeenCalledWith(
-          '/flows',
-          {
-            rev: 'rev-1',
-            flows: [{ id: 'node-a', type: 'inject', z: 'tab-1', name: 'x' }],
-          },
-          {
-            headers: {
-              'Node-RED-API-Version': 'v2',
-              'Node-RED-Deployment-Type': 'nodes',
-            },
-          }
-        );
       });
     });
 
@@ -491,7 +509,7 @@ describe('NodeRedAPIClient', () => {
     });
 
     describe('deployFlow', () => {
-      it('merges the tab, passes rev, and deploys with type "flows" by default', async () => {
+      it('merges the tab, POSTs expected_rev, and deploys with type "flows" by default', async () => {
         const flat = [
           { id: 'tab-a', type: 'tab', label: 'A' },
           { id: 'tab-b', type: 'tab', label: 'B' },
@@ -501,10 +519,14 @@ describe('NodeRedAPIClient', () => {
         mockAxiosInstance.get.mockResolvedValueOnce({ data: { rev: 'rev-1', flows: flat } });
         mockAxiosInstance.post.mockResolvedValueOnce({ data: { rev: 'rev-2' } });
 
-        const result = await client.deployFlow('tab-a', {
-          label: 'A2',
-          nodes: [{ id: 'n-a1', type: 'inject', name: 'kept', wires: [[]] }],
-        });
+        const result = await client.deployFlow(
+          'tab-a',
+          {
+            label: 'A2',
+            nodes: [{ id: 'n-a1', type: 'inject', name: 'kept', wires: [[]] }],
+          },
+          { expectedRev: 'rev-1' }
+        );
 
         expect(result).toEqual({ rev: 'rev-2' });
         expect(mockAxiosInstance.post).toHaveBeenCalledWith(
@@ -529,6 +551,20 @@ describe('NodeRedAPIClient', () => {
         expect(posted.flows).toHaveLength(4);
       });
 
+      it('fails fast when expected_rev is stale', async () => {
+        mockAxiosInstance.get.mockResolvedValueOnce({
+          data: {
+            rev: 'rev-fresh',
+            flows: [{ id: 'tab-a', type: 'tab', label: 'A' }],
+          },
+        });
+
+        await expect(
+          client.deployFlow('tab-a', { nodes: [] }, { expectedRev: 'rev-stale' })
+        ).rejects.toThrow(/expected_rev 'rev-stale'/);
+        expect(mockAxiosInstance.post).not.toHaveBeenCalled();
+      });
+
       it('allows Deployment-Type "nodes"', async () => {
         mockAxiosInstance.get.mockResolvedValueOnce({
           data: {
@@ -538,7 +574,11 @@ describe('NodeRedAPIClient', () => {
         });
         mockAxiosInstance.post.mockResolvedValueOnce({ data: { rev: 'rev-2' } });
 
-        await client.deployFlow('tab-a', { label: 'A', nodes: [] }, { type: 'nodes' });
+        await client.deployFlow(
+          'tab-a',
+          { label: 'A', nodes: [] },
+          { expectedRev: 'rev-1', type: 'nodes' }
+        );
 
         expect(mockAxiosInstance.post).toHaveBeenCalledWith(
           '/flows',
@@ -556,9 +596,9 @@ describe('NodeRedAPIClient', () => {
           data: { rev: 'rev-1', flows: [{ id: 'tab-a', type: 'tab', label: 'A' }] },
         });
 
-        await expect(client.deployFlow('nope', { nodes: [] })).rejects.toThrow(
-          /Flow 'nope' not found/
-        );
+        await expect(
+          client.deployFlow('nope', { nodes: [] }, { expectedRev: 'rev-1' })
+        ).rejects.toThrow(/Flow 'nope' not found/);
         expect(mockAxiosInstance.post).not.toHaveBeenCalled();
       });
 
@@ -576,9 +616,9 @@ describe('NodeRedAPIClient', () => {
           },
         });
 
-        await expect(client.deployFlow('tab-a', { nodes: [] })).rejects.toThrow(
-          /revision \(rev\) is out of date/
-        );
+        await expect(
+          client.deployFlow('tab-a', { nodes: [] }, { expectedRev: 'rev-1' })
+        ).rejects.toThrow(/revision \(rev\) is out of date/);
       });
     });
 
